@@ -10,6 +10,7 @@ import {
   Settings,
   Zap,
   Recycle,
+  RotateCcw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -43,6 +44,12 @@ const NAV_ITEMS = [
     href: '/entropy',
     icon: Recycle,
     description: 'Clean stale task lists',
+  },
+  {
+    label: 'Recurring Audit',
+    href: '/recurring',
+    icon: RotateCcw,
+    description: 'Find habits you are skipping',
   },
 ]
 
