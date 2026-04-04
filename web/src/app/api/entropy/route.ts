@@ -33,7 +33,7 @@ export async function GET() {
     const enriched = tasks.map((t) => ({
       id: t.id,
       content: t.content,
-      daysOld: differenceInDays(today, parseISO(t.createdAt)),
+      daysOld: t.createdAt ? differenceInDays(today, parseISO(t.createdAt)) : 0,
       hasNoDueDate: !t.due,
       hasShortContent: (t.content ?? '').split(' ').length <= 2,
       hasNoDescription: !t.description || t.description.trim() === '',
