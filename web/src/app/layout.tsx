@@ -9,8 +9,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
-      <body className="bg-[#020617] text-slate-100 antialiased">
+    <html lang="en">
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: `(function(){var t=localStorage.getItem('life-os-theme')||'dark';document.documentElement.setAttribute('data-theme',t);})()` }} />
+      </head>
+      <body className="bg-[--color-bg-base] text-[--color-text-primary] antialiased">
         <div className="flex min-h-screen">
           <Sidebar />
           <main className="ml-60 flex-1 overflow-auto">

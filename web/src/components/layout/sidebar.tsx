@@ -12,8 +12,11 @@ import {
   Recycle,
   RotateCcw,
   Mail,
+  Sun,
+  Moon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useState, useEffect } from 'react'
 
 const NAV_ITEMS = [
   {
@@ -62,6 +65,19 @@ const NAV_ITEMS = [
 
 export function Sidebar() {
   const pathname = usePathname()
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
+
+  useEffect(() => {
+    const saved = (localStorage.getItem('life-os-theme') ?? 'dark') as 'dark' | 'light'
+    setTheme(saved)
+  }, [])
+
+  function toggleTheme() {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    localStorage.setItem('life-os-theme', next)
+    document.documentElement.setAttribute('data-theme', next)
+  }
 
   return (
     <aside className="fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-slate-800 bg-slate-950">
@@ -105,7 +121,7 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-slate-800 p-4">
+      <div className="border-t border-slate-800 p-4 space-y-1">
         <Link
           href="/settings"
           className="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 transition-all hover:bg-slate-800/60 hover:text-slate-300"
@@ -113,6 +129,13 @@ export function Sidebar() {
           <Settings className="size-4" />
           <span className="text-sm">Settings</span>
         </Link>
+        <button
+          onClick={toggleTheme}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-slate-500 transition-all hover:bg-slate-800/60 hover:text-slate-300"
+        >
+          {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          <span className="text-sm">{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+        </button>
       </div>
     </aside>
   )

@@ -23,16 +23,91 @@ body {
   background-color: var(--color-bg-base);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
+  transition: background-color 0.2s ease, color 0.15s ease;
 }
 
-/* Subtle scrollbar styling */
+/* ─── Light theme ─────────────────────────────────────────────────────────── */
+/*
+  Remaps the Tailwind slate scale so all slate-* utility classes
+  automatically render warm, creamy light values.
+  High numbers (900–950): become light backgrounds (used as dark bg in dark mode)
+  Low numbers (100–300):  become dark text     (used as light text in dark mode)
+*/
+[data-theme="light"] {
+  /* Backgrounds */
+  --color-slate-950: #EEE9DF;   /* page bg: warm parchment */
+  --color-slate-900: #F8F5EF;   /* card bg: creamy off-white */
+  --color-slate-800: #E4DED2;   /* elevated, borders, skeleton */
+  --color-slate-700: #CFC8BA;   /* stronger borders, dividers */
+  --color-slate-600: #9C9488;   /* subtle/placeholder */
+
+  /* Text */
+  --color-slate-500: #7A7267;   /* secondary muted text */
+  --color-slate-400: #5C5549;   /* muted text */
+  --color-slate-300: #3E3830;   /* body text */
+  --color-slate-200: #272018;   /* heading text */
+  --color-slate-100: #18120C;   /* primary text */
+  --color-slate-50:  #0C0805;   /* darkest text */
+
+  /* Accent — slightly richer blue in light mode */
+  --color-indigo-400: #4F63E8;
+  --color-indigo-500: #3D52D9;
+  --color-indigo-600: #3045CC;
+
+  /* Scrollbar */
+  --scrollbar-thumb: #CFC8BA;
+  --scrollbar-thumb-hover: #B8B0A2;
+
+  /* Custom semantic vars */
+  --color-bg-base: #EEE9DF;
+  --color-bg-card: #F8F5EF;
+  --color-bg-elevated: #E4DED2;
+  --color-border: #E4DED2;
+  --color-text-primary: #18120C;
+  --color-text-muted: #7A7267;
+}
+
+/* ─── Scrollbar ───────────────────────────────────────────────────────────── */
+
+:root {
+  --scrollbar-thumb: #334155;
+  --scrollbar-thumb-hover: #475569;
+}
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #475569; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
-/* Prose-like styles for AI-generated report content */
-.report-content h2 { font-size: 1.1rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #e2e8f0; }
-.report-content p { color: #94a3b8; line-height: 1.7; margin-bottom: 0.75rem; }
-.report-content ul { list-style: disc; padding-left: 1.5rem; color: #94a3b8; }
+/* ─── Prose styles for AI report content ─────────────────────────────────── */
+
+.report-content h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--color-text-primary);
+}
+.report-content p {
+  color: var(--color-text-muted);
+  line-height: 1.7;
+  margin-bottom: 0.75rem;
+}
+.report-content ul { list-style: disc; padding-left: 1.5rem; color: var(--color-text-muted); }
 .report-content li { margin-bottom: 0.35rem; }
+
+/* ─── Smooth theme transitions ────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  transition-property: background-color, border-color;
+  transition-duration: 0.2s;
+  transition-timing-function: ease;
+}
+
+/* Don't transition transforms/opacity (breaks animations) */
+[class*="animate-"], [class*="transition-"] {
+  transition-property: none;
+}
