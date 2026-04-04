@@ -40,8 +40,8 @@ The five core features (in order of complexity):
 | GTD Weekly Review | Generates a David Allen-style weekly review report | ✅ Built |
 | Chief of Staff | Triages overdue/stale tasks with AI recommendations | ✅ Built |
 | Life Analytics | Productivity trend charts and behavioral insights | ✅ Basic built |
-| Smart Task Breakdown | Expands a vague task into actionable subtasks | 🔲 Phase 2 |
-| Task Entropy Cleaner | Finds and cleans up "rotting" task lists | 🔲 Phase 2 |
+| Smart Task Breakdown | Expands a vague task into actionable subtasks | ✅ Built |
+| Task Entropy Cleaner | Finds and cleans up "rotting" task lists | ✅ Built |
 | Deep Analytics | Circadian charts, overdue patterns, project volume | 🔲 Phase 3 |
 | Life OS Integrations | Calendar, email, task autopilot | 🔲 Phase 5 |
 
