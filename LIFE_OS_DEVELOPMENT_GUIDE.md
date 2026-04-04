@@ -1431,4 +1431,387 @@ new Set(Array.from(a).concat(Array.from(b)))
 
 ---
 
-*Last updated: Phase 0 + Phase 1 complete. Phase 2 ready to implement.*
+*Last updated: Phases 0–5 complete. Features below are planned but not yet implemented.*
+
+---
+
+## 16. Planned Feature: Enhanced Smart Task Breakdown
+
+### Overview
+
+The existing Smart Task Breakdown (Phase 2) generates subtasks and creates them after a preview. This enhancement adds three meaningful upgrades: editable subtasks before saving, auto-detection of vague tasks, and a richer editing experience.
+
+**Pros:**
+- Removes friction — user can tweak AI suggestions instead of accepting blindly
+- Auto-trigger catches vague tasks before they enter the system
+- Inline editing means fewer round-trips to Todoist
+
+**Cons:**
+- More complex UI state (editable list, add/remove rows)
+- Auto-trigger adds an API call on every plan load — could slow down the Daily Planner
+- Vague verb detection may have false positives (e.g. "Prepare gift" is clear to the user but flagged)
+
+---
+
+### 16.1 Editable Subtask Preview
+
+**What changes:** Replace the read-only subtask list in the breakdown modal with an editable list. User can rename, reorder, add, or remove subtasks before confirming.
+
+**Implementation — update `web/src/app/dashboard/page.tsx`:**
+
+Replace the static preview list in `BreakdownModal` with editable rows:
+
+```tsx
+const [editableSubtasks, setEditableSubtasks] = useState(breakdown.subtasks)
+
+// In the preview state:
+<ul className="space-y-2">
+  {editableSubtasks.map((s, i) => (
+    <li key={i} className="flex items-center gap-2">
+      <span className="text-indigo-400 text-xs w-5 shrink-0">{i + 1}</span>
+      <input
+        value={s.content}
+        onChange={(e) => {
+          const updated = [...editableSubtasks]
+          updated[i] = { ...updated[i], content: e.target.value }
+          setEditableSubtasks(updated)
+        }}
+        className="flex-1 bg-slate-800 rounded px-2 py-1.5 text-sm text-slate-200 border border-slate-700 focus:border-indigo-500 outline-none"
+      />
+      <button
+        onClick={() => setEditableSubtasks(editableSubtasks.filter((_, j) => j !== i))}
+        className="text-slate-600 hover:text-red-400"
+      >
+        ✕
+      </button>
+    </li>
+  ))}
+  {/* Add row */}
+  <li>
+    <button
+      onClick={() => setEditableSubtasks([...editableSubtasks, { content: '', order: editableSubtasks.length + 1 }])}
+      className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+    >
+      <Plus className="size-3" /> Add subtask
+    </button>
+  </li>
+</ul>
+```
+
+Pass `editableSubtasks` instead of `breakdown.subtasks` to the PUT request when confirming.
+
+---
+
+### 16.2 Auto-Trigger for Vague Tasks
+
+**What it does:** When the Daily Planner loads, scan task content for vague action verbs. Flag them visually with a "⚠️ Vague" badge and show the breakdown button more prominently.
+
+**Vague verb list** (expand as needed):
+```typescript
+const VAGUE_VERBS = [
+  'prepare', 'analyze', 'analyse', 'build', 'handle', 'deal with',
+  'look into', 'think about', 'work on', 'figure out', 'sort out',
+  'review', 'update', 'finalize', 'finalise', 'manage', 'process',
+]
+
+function isVague(content: string): boolean {
+  const lower = content.toLowerCase()
+  return VAGUE_VERBS.some((v) => lower.startsWith(v) || lower.includes(` ${v} `))
+}
+```
+
+**UI change:** In `BlockCard`, add a badge and make the breakdown button always visible (not just on hover) for vague tasks:
+
+```tsx
+const vague = isVague(task.content)
+
+{vague && (
+  <span className="text-xs text-amber-400 border border-amber-500/30 rounded px-1.5 py-0.5">
+    ⚠ Vague
+  </span>
+)}
+
+<button
+  onClick={() => onBreakdown(task.id, task.content, '')}
+  className={cn(
+    'flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-opacity',
+    vague
+      ? 'text-amber-400 opacity-100'           // always visible for vague tasks
+      : 'text-slate-500 opacity-0 group-hover:opacity-100',  // hover-only otherwise
+  )}
+>
+  <Scissors className="size-3" />
+  Break down
+</button>
+```
+
+**No API changes needed** — detection is purely client-side on the task content string.
+
+---
+
+### 16.3 Implementation Order
+
+1. Add `isVague()` helper to `web/src/lib/utils.ts`
+2. Update `BlockCard` in `dashboard/page.tsx` to flag vague tasks
+3. Add editable state to `BreakdownModal`
+4. Update the PUT call to use edited subtasks
+
+**Estimated complexity:** Low — all changes are in `dashboard/page.tsx` and `utils.ts`. No new API routes needed.
+
+---
+
+## 17. Planned Feature: Time Debt Tracker
+
+### Overview
+
+**Time debt** = the gap between when you planned to do something and when you actually did it. By tracking this systematically, the Daily Planner can compensate for your personal estimation bias — if you consistently take 2× longer than estimated on writing tasks, the planner schedules them with 2× the time.
+
+**Pros:**
+- Makes the Daily Planner genuinely adaptive — it learns your patterns
+- Surfaces blind spots (e.g. "you always underestimate meetings by 30 min")
+- Uses real data (Todoist duration field + completion date) rather than generic assumptions
+- Becomes more accurate over time — compounding value
+
+**Cons:**
+- Requires Todoist tasks to have the `duration` field set — most people don't use this
+- The completion-date gap is a proxy for time spent, not actual time spent (a task completed 3 days late might have taken 10 minutes, not 3 days)
+- Needs at least 30–60 days of data before patterns are meaningful
+- Complex to implement correctly — the estimation model needs to handle outliers
+
+---
+
+### 17.1 Database Schema
+
+Add to Supabase (run in SQL Editor):
+
+```sql
+CREATE TABLE time_debt_log (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  task_id TEXT NOT NULL UNIQUE,
+  content TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  labels TEXT[] DEFAULT '{}',
+  estimated_minutes INTEGER,          -- from Todoist duration field
+  scheduled_date DATE NOT NULL,       -- original due date
+  completed_date DATE NOT NULL,       -- actual completion date
+  delay_days INTEGER NOT NULL,        -- completed_date - scheduled_date (can be negative = early)
+  estimation_ratio FLOAT,             -- actual_time / estimated_time (if both known)
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ON time_debt_log (project_name);
+CREATE INDEX ON time_debt_log (completed_date);
+```
+
+---
+
+### 17.2 Data Collection
+
+Extend the daily cron (`/api/cron/snapshot`) to log completed tasks with their delay:
+
+```typescript
+// In the snapshot route, after fetching completedToday:
+const timeDebtRows = completedToday
+  .filter((t) => t.due?.date)   // only tasks that had a due date
+  .map((t) => {
+    const scheduledDate = parseISO(t.due!.date)
+    const completedDate = parseISO(t.completedAt)
+    const delayDays = differenceInDays(completedDate, scheduledDate)
+
+    return {
+      task_id: t.id,
+      content: t.content,
+      project_name: projectMap.get(t.projectId) ?? 'Inbox',
+      labels: t.labels,
+      estimated_minutes: t.duration?.unit === 'minute' ? t.duration.amount : null,
+      scheduled_date: format(scheduledDate, 'yyyy-MM-dd'),
+      completed_date: format(completedDate, 'yyyy-MM-dd'),
+      delay_days: delayDays,
+    }
+  })
+
+if (timeDebtRows.length > 0) {
+  await supabase
+    .from('time_debt_log')
+    .upsert(timeDebtRows, { onConflict: 'task_id' })
+}
+```
+
+---
+
+### 17.3 Analytics API
+
+Create `web/src/app/api/analytics/time-debt/route.ts`:
+
+```typescript
+// Query average delay per project and label
+const { data } = await supabase
+  .from('time_debt_log')
+  .select('project_name, labels, delay_days, estimated_minutes')
+  .gte('completed_date', format(subDays(new Date(), 90), 'yyyy-MM-dd'))
+
+// Aggregate: avg delay per project
+const byProject = new Map<string, number[]>()
+for (const row of data ?? []) {
+  const arr = byProject.get(row.project_name) ?? []
+  arr.push(row.delay_days)
+  byProject.set(row.project_name, arr)
+}
+
+const insights = Array.from(byProject.entries()).map(([project, delays]) => ({
+  project,
+  avgDelayDays: avg(delays),
+  medianDelayDays: median(delays),
+  onTimeRate: delays.filter(d => d <= 0).length / delays.length,
+}))
+
+// Send to AI for pattern analysis
+const aiInsight = await generateJSON(prompt)
+```
+
+---
+
+### 17.4 Daily Planner Integration
+
+Once enough data exists (30+ completed tasks), pass the time debt profile to the daily plan AI prompt:
+
+```typescript
+// In /api/daily-plan/route.ts
+const { data: timeDebtProfile } = await supabase
+  .from('time_debt_log')
+  .select('project_name, delay_days')
+  .gte('completed_date', thirtyDaysAgo)
+
+const avgDelayByProject = aggregateDelays(timeDebtProfile)
+
+// Add to the prompt:
+`User's historical time debt profile (avg days late per project):
+${JSON.stringify(avgDelayByProject)}
+
+When scheduling tasks from projects with high avg delay, add 20–50% buffer time.`
+```
+
+---
+
+### 17.5 UI
+
+Add a **Time Debt** tab to the Analytics page showing:
+- Table: project / avg delay / on-time rate / trend
+- Chart: delay distribution over time (are you getting better or worse?)
+- AI insight: "Your writing tasks run 2.3 days late on average. Your admin tasks are usually on time."
+
+**Estimated complexity:** Medium-High. Data collection is straightforward but the planning integration and analytics UI require careful design to be useful rather than just guilt-inducing.
+
+---
+
+## 18. New Feature Ideas (AI-Powered)
+
+### 18.1 Context-Aware Task Prioritization Agent
+
+**The idea:** Every morning, before you open the Daily Planner, an AI agent re-scores all your active tasks based on signals beyond just the due date and Todoist priority. It factors in: what you accomplished yesterday, what emails arrived overnight (via Gmail), what's on your calendar today, and your historical completion patterns.
+
+**Why it's interesting:** Todoist's priority system is static — you set p1 and it stays p1 forever. Real-world priority is dynamic. A task you marked p3 last week might be p1 today because of an email you received.
+
+**AI angle:** Uses multi-source context fusion — Todoist tasks + Gmail + Calendar + completion history → single prioritized list. This is genuinely hard to do without an LLM because the signals are heterogeneous (structured tasks, unstructured email, time-based calendar).
+
+**Implementation sketch:**
+- Runs as a new API route `/api/prioritize` called when the Daily Planner loads
+- Fetches tasks + Gmail summary + today's calendar events in parallel
+- Sends to AI: "Given everything happening today, re-rank these tasks. Explain your reasoning."
+- Returns a ranked list with re-scored priorities and one-line justifications
+- Daily Planner uses this ranked order instead of Todoist's native order
+
+**Pros:** High signal-to-noise. Makes the planner feel genuinely intelligent.
+**Cons:** Expensive in AI tokens (large context). Requires all three integrations active.
+
+---
+
+### 18.2 Voice Task Capture with AI Parsing
+
+**The idea:** Add a floating microphone button to the app. User speaks a task ("remind me to call John about the contract next Tuesday afternoon, it's important"). AI transcribes, parses intent, and creates a structured Todoist task with the correct due date, time, priority, and project.
+
+**Why it's interesting:** Most task capture friction comes from the keyboard. Voice is 5–10× faster for natural-language input. The AI parsing step is what makes this genuinely useful — it's not just transcription, it's structured extraction.
+
+**AI angle:** Two-model pipeline: browser's Web Speech API (free, no latency) for transcription → Gemini for structured extraction (content, due date string, priority, project name, labels).
+
+**Implementation sketch:**
+```typescript
+// Client: use Web Speech API
+const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)()
+recognition.onresult = (e) => captureTranscript(e.results[0][0].transcript)
+
+// Server: POST /api/voice-capture
+// Body: { transcript: "call John about contract next Tuesday afternoon" }
+// Returns: { content, dueString, priority, projectName, labels }
+const parsed = await generateJSON(
+  `Extract a Todoist task from this voice note: "${transcript}"
+   Return: { content, dueString, priority (p1-p4), projectName, labels }`
+)
+// Then create the task via Todoist API
+```
+
+**Floating button:** Fixed position, bottom-right corner. Pulse animation while recording. Shows transcript + parsed task preview before creating.
+
+**Pros:** Genuinely novel UX. Works great on mobile. No typing required.
+**Cons:** Web Speech API browser support varies. Requires HTTPS (already have it). Transcription accuracy depends on accent/noise.
+
+---
+
+### 18.3 Weekly Narrative Generator ("Life Log")
+
+**The idea:** Each Sunday, instead of just a GTD review, the AI writes a personal narrative summary of your week — what you worked on, what you accomplished, what you deferred, and what patterns it notices about how you spent your time. Saved to Supabase and accessible as a personal journal.
+
+**Why it's interesting:** The GTD Weekly Review is analytical. This is reflective. Over time, you build a searchable history of what you were working on and thinking about — a digital memoir of your productivity.
+
+**AI angle:** Uses the weekly review data (completed tasks, overdue, project breakdown) but prompts the AI to write in first-person narrative style rather than bullet points. The AI is instructed to notice changes from previous weeks (if available in Supabase).
+
+**Implementation sketch:**
+- Extend `/api/weekly-review` to also save the report to `weekly_reviews` table (already in schema)
+- New route `/api/life-log` reads the last 12 weeks of reports and generates a narrative
+- New page `/life-log` shows weekly entries as a timeline — click to expand each week's narrative
+- Search across all entries (simple text search via Supabase `ilike`)
+
+**Pros:** High perceived value. Unique to this system — nothing like it in Todoist itself.
+**Cons:** Writing quality depends heavily on prompt crafting. Requires weeks of data before it feels meaningful.
+
+---
+
+### 18.4 AI Meeting Prep Brief
+
+**The idea:** 30 minutes before each Google Calendar meeting, the app auto-generates a meeting brief: who's attending, what your open Todoist tasks are related to that person/topic, what was discussed last time (if you've used the app long enough), and 3 suggested talking points.
+
+**Why it's interesting:** Meeting prep is universally neglected but high-value. Connecting calendar + tasks + history in one brief is genuinely hard to do manually but trivial for an AI with access to all three.
+
+**AI angle:** Context assembly across three sources (Calendar event details → Todoist task search → previous meeting history) → AI generates a structured brief.
+
+**Implementation sketch:**
+- New route `/api/calendar/brief?eventId=xxx`
+- Fetches the calendar event details (title, description, attendees)
+- Searches Todoist tasks for content matching attendee names or event title keywords
+- Queries Supabase `weekly_reviews` for mentions of the same attendees/topics
+- AI generates: agenda, relevant tasks, suggested talking points, follow-up template
+
+**Pros:** Extremely high daily value for anyone who has meetings. Very few tools do this.
+**Cons:** Requires Calendar integration active. Quality depends on how well-named your Todoist tasks are. Attendee matching is fuzzy.
+
+---
+
+### 18.5 Intelligent Task Aging and Decay System
+
+**The idea:** Tasks should "decay" the longer they sit untouched. Instead of a static list, each task gets a dynamic "relevance score" that decreases over time. Tasks that have been in the system for 90+ days without progress automatically surface to a "Decay Review" — but the AI also assesses whether the decay is intentional (long-term project) or neglect.
+
+**Why it's interesting:** Most productivity systems suffer from "task debt accumulation" — things pile up because there's no mechanism that forces confrontation. Decay scoring makes the problem visible before it becomes a crisis.
+
+**AI angle:** The AI's role is distinguishing *intentional patience* (a task you're waiting on) from *neglect* (a task you've forgotten about). It does this by looking at: task content, project context, labels, whether related tasks have been completed, and the user's historical engagement patterns with similar tasks.
+
+**Implementation sketch:**
+- Decay score formula: `base_score = 100 - (days_old * 0.5) - (days_overdue * 2)`
+- Adjusted up if: recently viewed project, sibling tasks completed, p1/p2 priority
+- Adjusted down if: no due date ever set, project has high entropy score, similar tasks historically ignored
+- New route `/api/decay` runs the scoring model and returns top 20 decaying tasks
+- New page `/decay` shows tasks with decay bars (like entropy cleaner but time-focused)
+- Integrated into Chief of Staff: tasks below decay threshold automatically flagged
+
+**Pros:** Addresses a root cause of task system failure. Complements Entropy Cleaner (entropy = vague, decay = old).
+**Cons:** Decay formula needs tuning per user. Could feel anxiety-inducing if not framed carefully in the UI.
+
