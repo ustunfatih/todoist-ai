@@ -1,5 +1,7 @@
-import { Settings, Key, Clock, Globe } from 'lucide-react'
+import { Settings, Key, Clock, Globe, Link2 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
+
+const isGoogleConnected = !!process.env.GOOGLE_REFRESH_TOKEN
 
 function EnvRow({ name, label, description }: { name: string; label: string; description: string }) {
   return (
@@ -71,6 +73,36 @@ export default function SettingsPage() {
             label="Timezone"
             description="Used for scheduling. Default: Asia/Qatar"
           />
+        </Card>
+
+        <Card>
+          <div className="mb-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Link2 className="size-4 text-indigo-400" />
+              <span className="text-sm font-semibold text-slate-200">Google Integration</span>
+            </div>
+            <span className={`text-xs font-medium px-2 py-1 rounded-full ${isGoogleConnected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-700 text-slate-400'}`}>
+              {isGoogleConnected ? 'Connected' : 'Not connected'}
+            </span>
+          </div>
+          {isGoogleConnected ? (
+            <p className="text-xs text-slate-500">
+              Google Calendar and Gmail are active. Calendar events appear in your Daily Planner automatically.
+              To reconnect, visit <code className="text-indigo-400">/api/auth/google</code>.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-xs text-slate-500">
+                Connect Google to enable Calendar integration in the Daily Planner and Gmail task scanning.
+              </p>
+              <a
+                href="/api/auth/google"
+                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 transition-colors"
+              >
+                Connect Google Account
+              </a>
+            </div>
+          )}
         </Card>
 
         <Card className="border-dashed">

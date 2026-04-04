@@ -11,6 +11,7 @@ import {
   Zap,
   Recycle,
   RotateCcw,
+  Mail,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -50,6 +51,12 @@ const NAV_ITEMS = [
     href: '/recurring',
     icon: RotateCcw,
     description: 'Find habits you are skipping',
+  },
+  {
+    label: 'Gmail Scanner',
+    href: '/gmail',
+    icon: Mail,
+    description: 'Turn emails into tasks',
   },
 ]
 

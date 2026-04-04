@@ -42,7 +42,8 @@ The five core features (in order of complexity):
 | Life Analytics | Productivity trend charts and behavioral insights | ✅ Basic built |
 | Smart Task Breakdown | Expands a vague task into actionable subtasks | ✅ Built |
 | Task Entropy Cleaner | Finds and cleans up "rotting" task lists | ✅ Built |
-| Deep Analytics | Circadian charts, overdue patterns, project volume | 🔲 Phase 3 |
+| Deep Analytics | Circadian charts, overdue patterns, project volume | ✅ Built |
+| Recurring Task Audit | Flags habits you are consistently skipping | ✅ Built |
 | Life OS Integrations | Calendar, email, task autopilot | 🔲 Phase 5 |
 
 ---

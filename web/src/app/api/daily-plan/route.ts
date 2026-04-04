@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getTodayTasks, getProjects, normalizePriority, type TodoistTask } from '@/lib/todoist'
 import { generateJSON } from '@/lib/ai'
+import { getCalendarEvents, hasGoogleAuth, type CalendarEvent } from '@/lib/google'
 import { format } from 'date-fns'
 
 export interface TimeBlock {
@@ -52,7 +53,11 @@ function isOverdue(task: TodoistTask): boolean {
 
 export async function GET() {
   try {
-    const [tasks, projects] = await Promise.all([getTodayTasks(), getProjects()])
+    const [tasks, projects, calendarEvents] = await Promise.all([
+      getTodayTasks(),
+      getProjects(),
+      hasGoogleAuth() ? getCalendarEvents(new Date()).catch(() => [] as CalendarEvent[]) : Promise.resolve([] as CalendarEvent[]),
+    ])
 
     const projectMap = new Map(projects.map((p) => [p.id, p.name]))
     const today = new Date()
@@ -81,6 +86,7 @@ export async function GET() {
 Today's date: ${todayStr} (${format(today, 'EEEE')})
 Work hours: ${workStart}:00 to ${workEnd}:00
 Total tasks to schedule: ${enrichedTasks.length}
+${calendarEvents.length > 0 ? `\nCalendar events today (DO NOT schedule tasks during these times):\n${JSON.stringify(calendarEvents, null, 2)}\n` : ''}
 
 Tasks (JSON):
 ${JSON.stringify(enrichedTasks, null, 2)}
