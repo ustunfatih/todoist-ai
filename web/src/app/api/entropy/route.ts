@@ -35,7 +35,7 @@ export async function GET() {
       content: t.content,
       daysOld: differenceInDays(today, parseISO(t.createdAt)),
       hasNoDueDate: !t.due,
-      hasShortContent: t.content.split(' ').length <= 2,
+      hasShortContent: (t.content ?? '').split(' ').length <= 2,
       hasNoDescription: !t.description || t.description.trim() === '',
       priority: normalizePriority(t.priority),
       projectName: projectMap.get(t.projectId) ?? 'Inbox',
