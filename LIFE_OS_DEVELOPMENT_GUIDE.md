@@ -1708,21 +1708,164 @@ Add a **Time Debt** tab to the Analytics page showing:
 
 ### 18.1 Context-Aware Task Prioritization Agent
 
-**The idea:** Every morning, before you open the Daily Planner, an AI agent re-scores all your active tasks based on signals beyond just the due date and Todoist priority. It factors in: what you accomplished yesterday, what emails arrived overnight (via Gmail), what's on your calendar today, and your historical completion patterns.
+**The idea:** Every morning, an AI agent re-scores all your active tasks based on signals beyond just the due date and Todoist priority. It factors in: what you accomplished yesterday, what emails arrived overnight (via Gmail), what is on your calendar today, and your historical completion patterns from Supabase. The Daily Planner then uses this AI-ranked order instead of Todoist's native order.
 
-**Why it's interesting:** Todoist's priority system is static — you set p1 and it stays p1 forever. Real-world priority is dynamic. A task you marked p3 last week might be p1 today because of an email you received.
+**Why it matters:** Todoist's priority system is static — you set p1 and it stays p1 forever, even if the context that made it p1 has changed. Real-world priority is dynamic. A task you marked p3 two weeks ago might be the most important thing today because of an email that arrived this morning.
 
-**AI angle:** Uses multi-source context fusion — Todoist tasks + Gmail + Calendar + completion history → single prioritized list. This is genuinely hard to do without an LLM because the signals are heterogeneous (structured tasks, unstructured email, time-based calendar).
+**Pros:**
+- Makes the Daily Planner feel genuinely intelligent rather than just a schedule formatter
+- Surfaces tasks the user would have missed because of static priority
+- AI justifications teach the user to think about priority differently
+- Compounds with Gmail and Calendar integrations already built
 
-**Implementation sketch:**
-- Runs as a new API route `/api/prioritize` called when the Daily Planner loads
-- Fetches tasks + Gmail summary + today's calendar events in parallel
-- Sends to AI: "Given everything happening today, re-rank these tasks. Explain your reasoning."
-- Returns a ranked list with re-scored priorities and one-line justifications
-- Daily Planner uses this ranked order instead of Todoist's native order
+**Cons:**
+- Expensive in AI tokens — large context prompt (tasks + Gmail + calendar + history)
+- Requires Gmail + Calendar integrations active to reach full potential; degrades gracefully without them
+- Prioritization is subjective — AI may occasionally disagree with the user's instincts
+- Adds ~2–4 seconds to Daily Planner load time (extra API calls run in parallel)
 
-**Pros:** High signal-to-noise. Makes the planner feel genuinely intelligent.
-**Cons:** Expensive in AI tokens (large context). Requires all three integrations active.
+---
+
+#### Data Flow
+
+```
+Daily Planner loads
+        │
+        ├── GET /api/daily-plan
+        │       │
+        │       ├── getTodayTasks()          ← Todoist: all tasks due today + overdue
+        │       ├── getProjects()            ← Todoist: project name lookup
+        │       ├── getCalendarEvents()      ← Google Calendar: today's meetings (if connected)
+        │       ├── getRecentEmails(5)       ← Gmail: last 5 unread emails (if connected)
+        │       └── getYesterdayCompleted()  ← Supabase completion_log: what was done yesterday
+        │
+        └── All data → Gemini prompt → returns DayPlan with AI-prioritized task order
+```
+
+---
+
+#### Step 1 — Add `getYesterdayCompleted()` to `lib/todoist.ts`
+
+```typescript
+export async function getYesterdayCompleted(): Promise<TodoistCompletedTask[]> {
+  const since = subDays(new Date(), 1).toISOString()
+  const until = new Date().toISOString()
+  return getCompletedTasks(since, until)
+}
+```
+
+No new database query needed — uses the existing Todoist completed tasks endpoint.
+
+---
+
+#### Step 2 — Update `web/src/app/api/daily-plan/route.ts`
+
+Add two new parallel fetches alongside the existing ones:
+
+```typescript
+const [tasks, projects, calendarEvents, recentEmails, yesterdayDone] = await Promise.all([
+  getTodayTasks(),
+  getProjects(),
+  hasGoogleAuth() ? getCalendarEvents(new Date()).catch(() => []) : [],
+  hasGoogleAuth() ? getRecentEmails(5).catch(() => []) : [],        // NEW
+  getYesterdayCompleted().catch(() => []),                           // NEW
+])
+```
+
+Add the new context to the Gemini prompt, **before** the task list:
+
+```typescript
+const yesterdayContext = yesterdayDone.length > 0
+  ? `\nCompleted yesterday (${yesterdayDone.length} tasks):\n${yesterdayDone.slice(0, 10).map(t => `- ${t.content}`).join('\n')}`
+  : ''
+
+const emailContext = recentEmails.length > 0
+  ? `\nRecent unread emails (may affect priorities):\n${recentEmails.map(e => `- From: ${e.from} | Subject: ${e.subject} | ${e.snippet.slice(0, 100)}`).join('\n')}`
+  : ''
+
+const prompt = `You are an expert personal productivity coach and calendar optimizer.
+
+Today's date: ${todayStr} (${format(today, 'EEEE')})
+Work hours: ${workStart}:00 to ${workEnd}:00
+${yesterdayContext}
+${emailContext}
+${calendarEvents.length > 0 ? `\nCalendar events today (block these times):\n${JSON.stringify(calendarEvents)}` : ''}
+
+PRIORITIZATION RULES (apply before scheduling):
+1. If an email mentions a task by name or topic → elevate that task's priority
+2. If a task was deferred from yesterday → bump it one priority level
+3. If a calendar meeting is about a topic → surface related tasks before that meeting
+4. Tasks with the word "deadline", "urgent", "today" in content → treat as p1 regardless of Todoist flag
+
+Total tasks to schedule: ${enrichedTasks.length}
+
+Tasks (JSON):
+${JSON.stringify(enrichedTasks, null, 2)}
+...`
+```
+
+Add a `priorityReason` field to the `TimeBlock` task type so the UI can show why each task was prioritized:
+
+```typescript
+// In /api/daily-plan/route.ts — update the return schema prompt:
+// Add to the tasks array in blocks:
+"priorityReason": "string | null  // e.g. 'Elevated: related email from John received this morning'"
+```
+
+---
+
+#### Step 3 — Update `TimeBlock` type in `route.ts`
+
+```typescript
+export interface TimeBlock {
+  // ... existing fields ...
+  tasks: Array<{
+    // ... existing fields ...
+    priorityReason: string | null   // ADD THIS
+  }>
+}
+```
+
+---
+
+#### Step 4 — Update Dashboard UI
+
+In `BlockCard` in `dashboard/page.tsx`, show the priority reason as a subtle tooltip or inline note:
+
+```tsx
+{task.priorityReason && (
+  <p className="mt-1 text-xs text-indigo-400/70 italic">
+    ↑ {task.priorityReason}
+  </p>
+)}
+```
+
+---
+
+#### Step 5 — Implementation Order
+
+1. Add `getYesterdayCompleted()` to `lib/todoist.ts`
+2. Update `daily-plan/route.ts` parallel fetches
+3. Expand the Gemini prompt with context sections
+4. Add `priorityReason` to `TimeBlock` type
+5. Update `BlockCard` to render priority reason
+6. Test with and without Gmail/Calendar connected — must degrade gracefully
+
+**Estimated complexity:** Medium. No new routes or database tables needed. The entire change is in `daily-plan/route.ts` and `dashboard/page.tsx`. The main risk is prompt size — watch for Gemini token limits if task list is large (>50 tasks). Mitigate by summarising Gmail snippets and limiting completed tasks to top 10.
+
+---
+
+#### Manual Prerequisites (what you need to do before implementation starts)
+
+| # | Action | Where |
+|---|---|---|
+| 1 | Confirm Google Calendar integration is working | Visit Daily Planner → Build My Day — check for meeting blocks |
+| 2 | Confirm Gmail integration is working | Visit Gmail Scanner → Scan Inbox — confirm emails appear |
+| 3 | Confirm `GOOGLE_REFRESH_TOKEN` is set in Vercel | Vercel → Project → Settings → Environment Variables |
+| 4 | No new environment variables required | — |
+| 5 | No new Supabase tables required | — |
+
+**Note:** This feature degrades gracefully — if Gmail or Calendar is not connected, the Daily Planner still works, just without the extra context signals.
 
 ---
 
@@ -1759,20 +1902,325 @@ const parsed = await generateJSON(
 
 ### 18.3 Weekly Narrative Generator ("Life Log")
 
-**The idea:** Each Sunday, instead of just a GTD review, the AI writes a personal narrative summary of your week — what you worked on, what you accomplished, what you deferred, and what patterns it notices about how you spent your time. Saved to Supabase and accessible as a personal journal.
+**The idea:** Each Sunday, after the GTD Weekly Review runs, the AI also writes a personal narrative — a first-person, paragraph-form account of the week. What you worked on, what you accomplished, what you avoided, and how this week compares to the previous ones. Saved permanently to Supabase and displayed as a searchable personal journal you can scroll back through months later.
 
-**Why it's interesting:** The GTD Weekly Review is analytical. This is reflective. Over time, you build a searchable history of what you were working on and thinking about — a digital memoir of your productivity.
+**Why it matters:** The GTD Weekly Review gives you a structured report. The Life Log gives you a story. Over time you accumulate a memoir of your productive life — what you were focused on in March, what projects dominated October, when you were most productive and when you were burned out. No other productivity tool does this.
 
-**AI angle:** Uses the weekly review data (completed tasks, overdue, project breakdown) but prompts the AI to write in first-person narrative style rather than bullet points. The AI is instructed to notice changes from previous weeks (if available in Supabase).
+**Pros:**
+- Unique — nothing like it exists in Todoist or any standard productivity tool
+- Writing quality is immediately high because Gemini is excellent at narrative prose
+- Grows more valuable over time — 6 months of entries is far more interesting than 1
+- The `weekly_reviews` Supabase table is already in the schema — no new DB setup needed
+- Search makes it a personal knowledge base, not just a diary
 
-**Implementation sketch:**
-- Extend `/api/weekly-review` to also save the report to `weekly_reviews` table (already in schema)
-- New route `/api/life-log` reads the last 12 weeks of reports and generates a narrative
-- New page `/life-log` shows weekly entries as a timeline — click to expand each week's narrative
-- Search across all entries (simple text search via Supabase `ilike`)
+**Cons:**
+- Requires several weeks of Weekly Review usage before cross-week comparisons are meaningful
+- Writing quality depends on prompt crafting — poor prompts produce generic output
+- The narrative is only as good as the data — sparse completion history = thin narrative
+- No automatic trigger — user must click "Generate Life Log" or set up a cron
 
-**Pros:** High perceived value. Unique to this system — nothing like it in Todoist itself.
-**Cons:** Writing quality depends heavily on prompt crafting. Requires weeks of data before it feels meaningful.
+---
+
+#### Architecture Overview
+
+```
+Weekly Review page (existing)
+        │
+        └── On "Generate" click → /api/weekly-review
+                │
+                ├── Returns WeeklyReport JSON (existing behavior, unchanged)
+                └── NEW: saves report to Supabase weekly_reviews table
+                         with week_start as the unique key
+
+New: /api/life-log/generate
+        │
+        ├── Reads current week's WeeklyReport from Supabase
+        ├── Reads previous 4 weeks' reports for context
+        └── Gemini prompt → returns narrative string
+                │
+                └── Saves narrative back to weekly_reviews.narrative column
+
+New: /api/life-log
+        │
+        └── Returns all weekly_reviews rows, ordered newest first
+                (used by the /life-log page to render the journal)
+
+New: /life-log page
+        │
+        ├── Timeline of weekly entries (newest at top)
+        ├── Each entry: week dates + narrative + expandable stats
+        └── Search bar → filters entries by keyword
+```
+
+---
+
+#### Step 1 — Update Supabase Schema
+
+The `weekly_reviews` table already exists. Add a `narrative` column:
+
+```sql
+-- Run in Supabase SQL Editor
+ALTER TABLE weekly_reviews ADD COLUMN IF NOT EXISTS narrative TEXT;
+ALTER TABLE weekly_reviews ADD COLUMN IF NOT EXISTS narrative_generated_at TIMESTAMPTZ;
+```
+
+---
+
+#### Step 2 — Auto-save Weekly Review to Supabase
+
+Update `web/src/app/api/weekly-review/route.ts` to save every generated report:
+
+```typescript
+import { supabase } from '@/lib/supabase'
+import { startOfWeek, format } from 'date-fns'
+
+// After: const report = await generateJSON<WeeklyReport>(prompt)
+// Add:
+const weekStartDate = format(startOfWeek(today, { weekStartsOn: 1 }), 'yyyy-MM-dd')
+
+await supabase
+  .from('weekly_reviews')
+  .upsert(
+    { week_start: weekStartDate, report },
+    { onConflict: 'week_start' }
+  )
+```
+
+This runs silently on every Weekly Review generation — no UI change needed.
+
+---
+
+#### Step 3 — Create `/api/life-log/generate/route.ts`
+
+This is the core narrative generation route:
+
+```typescript
+import { NextResponse } from 'next/server'
+import { supabase } from '@/lib/supabase'
+import { generateText } from '@/lib/ai'
+import { format, startOfWeek } from 'date-fns'
+import type { WeeklyReport } from '../../weekly-review/route'
+
+export async function POST() {
+  // Fetch this week + last 4 weeks for context
+  const { data: entries } = await supabase
+    .from('weekly_reviews')
+    .select('week_start, report')
+    .order('week_start', { ascending: false })
+    .limit(5)
+
+  if (!entries || entries.length === 0) {
+    return NextResponse.json({ error: 'No weekly reviews found. Generate a Weekly Review first.' }, { status: 404 })
+  }
+
+  const [current, ...previous] = entries
+  const currentReport = current.report as WeeklyReport
+
+  const previousContext = previous.length > 0
+    ? `Previous weeks for comparison:\n${previous.map(e => {
+        const r = e.report as WeeklyReport
+        return `Week of ${e.week_start}: ${r.stats.completed} completed, ${r.stats.overdue} overdue, focus: ${r.stats.mostActiveProject}`
+      }).join('\n')}`
+    : 'This is the first week on record.'
+
+  const prompt = `You are writing a personal productivity journal entry for the week of ${current.week_start}.
+
+Write in a warm, reflective, first-person voice — like a thoughtful personal journal, not a corporate report.
+Reference specific tasks and projects by name where possible. Be honest about struggles and patterns.
+If this is not the first week, compare to previous weeks naturally in the narrative.
+
+WEEK DATA:
+${JSON.stringify(currentReport, null, 2)}
+
+${previousContext}
+
+WRITING GUIDELINES:
+- 3–5 paragraphs, each 3–5 sentences
+- First paragraph: overall feel of the week + headline number (e.g. "This was a productive week — 23 tasks completed across 4 projects")
+- Second paragraph: what you actually worked on — name specific projects and wins
+- Third paragraph: honest reflection on what got deferred and why (reference overdueAnalysis)
+- Fourth paragraph: patterns or insights you notice about yourself this week
+- Fifth paragraph (optional): forward look — what to carry into next week based on focusAreas
+- DO NOT use bullet points, headers, or markdown — pure flowing prose only
+- DO NOT be generic — every sentence should reference the actual data
+- Tone: like a thoughtful friend reviewing your week with you, not a life coach
+
+Write the journal entry now:`
+
+  const narrative = await generateText(prompt)
+
+  // Save narrative back to the same row
+  await supabase
+    .from('weekly_reviews')
+    .update({
+      narrative,
+      narrative_generated_at: new Date().toISOString(),
+    })
+    .eq('week_start', current.week_start)
+
+  return NextResponse.json({ weekStart: current.week_start, narrative })
+}
+```
+
+---
+
+#### Step 4 — Create `/api/life-log/route.ts`
+
+Simple read route for the journal page:
+
+```typescript
+import { NextResponse } from 'next/server'
+import { supabase } from '@/lib/supabase'
+
+export interface LifeLogEntry {
+  week_start: string
+  narrative: string | null
+  report: {
+    weekStart: string
+    weekEnd: string
+    stats: {
+      completed: number
+      overdue: number
+      mostActiveProject: string
+      karmaScore: number
+    }
+    summary: string
+  }
+  narrative_generated_at: string | null
+}
+
+export async function GET() {
+  const { data, error } = await supabase
+    .from('weekly_reviews')
+    .select('week_start, narrative, narrative_generated_at, report')
+    .order('week_start', { ascending: false })
+    .limit(52)  // max 1 year of entries
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ entries: data ?? [] })
+}
+```
+
+---
+
+#### Step 5 — Create `/app/life-log/page.tsx`
+
+Key UI elements:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 📖 Life Log                    [Search entries...]       │
+│ Your personal productivity journal                       │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  Week of Apr 7 – Apr 13, 2026                           │
+│  ● 23 completed · 4 overdue · Top: Work                │
+│                                                          │
+│  This was a focused week. I made meaningful progress    │
+│  on the quarterly report, completing the data analysis  │
+│  section I had been putting off for two weeks...        │
+│                                                          │
+│  [Read more ▼]              [Generate narrative]        │
+├─────────────────────────────────────────────────────────┤
+│  Week of Mar 31 – Apr 6, 2026                           │
+│  ● 18 completed · 7 overdue · Top: Personal             │
+│  ...                                                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+State to manage:
+```typescript
+const [entries, setEntries] = useState<LifeLogEntry[]>([])
+const [search, setSearch] = useState('')
+const [expanded, setExpanded] = useState<Set<string>>(new Set())
+const [generating, setGenerating] = useState<string | null>(null)  // week_start being generated
+```
+
+Search filter (client-side, no DB query needed):
+```typescript
+const filtered = entries.filter(e =>
+  search === '' ||
+  e.narrative?.toLowerCase().includes(search.toLowerCase()) ||
+  (e.report.stats.mostActiveProject ?? '').toLowerCase().includes(search.toLowerCase())
+)
+```
+
+Generate button per entry:
+```typescript
+async function generateNarrative() {
+  setGenerating(entry.week_start)
+  await fetch('/api/life-log/generate', { method: 'POST' })
+  // Reload entries
+  const res = await fetch('/api/life-log')
+  const data = await res.json()
+  setEntries(data.entries)
+  setGenerating(null)
+}
+```
+
+---
+
+#### Step 6 — Add to Sidebar
+
+```typescript
+{
+  label: 'Life Log',
+  href: '/life-log',
+  icon: BookOpen,   // from lucide-react
+  description: 'Your weekly journal',
+}
+```
+
+---
+
+#### Step 7 — (Optional) Weekly Cron Auto-Generation
+
+Add a second cron job to `vercel.json` that auto-generates the narrative every Sunday evening:
+
+```json
+{
+  "crons": [
+    { "path": "/api/cron/snapshot", "schedule": "0 20 * * *" },
+    { "path": "/api/cron/weekly-narrative", "schedule": "0 18 * * 0" }
+  ]
+}
+```
+
+Create `web/src/app/api/cron/weekly-narrative/route.ts` that:
+1. Calls `/api/weekly-review` to regenerate a fresh report
+2. Then calls `/api/life-log/generate` to write the narrative
+
+Protect with the same `CRON_SECRET` header.
+
+---
+
+#### Step 8 — Implementation Order
+
+1. Run the SQL migration (add `narrative` and `narrative_generated_at` columns)
+2. Update `/api/weekly-review/route.ts` to auto-save to Supabase
+3. Create `/api/life-log/route.ts` (read all entries)
+4. Create `/api/life-log/generate/route.ts` (narrative generation)
+5. Create `/app/life-log/page.tsx` (timeline UI)
+6. Add to sidebar
+7. Generate your first Weekly Review to populate the DB
+8. Click "Generate narrative" on the entry
+9. (Optional) Add the Sunday cron for automation
+
+**Estimated complexity:** Medium. The hardest part is the narrative prompt — iterate on it until the writing quality feels personal and specific, not generic. The DB and API work is straightforward. Expect 2–3 prompt iterations before the output feels right.
+
+---
+
+#### Manual Prerequisites (what you need to do before implementation starts)
+
+| # | Action | Where |
+|---|---|---|
+| 1 | Run the SQL migration to add `narrative` column | Supabase → SQL Editor → run: `ALTER TABLE weekly_reviews ADD COLUMN IF NOT EXISTS narrative TEXT; ALTER TABLE weekly_reviews ADD COLUMN IF NOT EXISTS narrative_generated_at TIMESTAMPTZ;` |
+| 2 | Generate at least one Weekly Review | Life OS → Weekly Review tab → click Generate — this populates the `weekly_reviews` table for the first time |
+| 3 | Confirm `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set in Vercel | Vercel → Project → Settings → Environment Variables |
+| 4 | No new API keys required | — |
+| 5 | (Optional) If you want the Sunday auto-cron: confirm `CRON_SECRET` is set in Vercel | Already set from Phase 3 cron setup |
+
+**Note:** The Life Log gets dramatically better after 4+ weeks of Weekly Review data. The first entry will have no cross-week comparison. By week 4, the AI can say "this was your least productive week in a month" — that's where the real value is.
 
 ---
 
@@ -1798,20 +2246,274 @@ const parsed = await generateJSON(
 
 ### 18.5 Intelligent Task Aging and Decay System
 
-**The idea:** Tasks should "decay" the longer they sit untouched. Instead of a static list, each task gets a dynamic "relevance score" that decreases over time. Tasks that have been in the system for 90+ days without progress automatically surface to a "Decay Review" — but the AI also assesses whether the decay is intentional (long-term project) or neglect.
+**The idea:** Every active task gets a dynamic "freshness score" (0–100) that decreases over time based on age, overdue status, priority, and project health signals. Tasks that decay below a threshold surface automatically in a Decay Review page — but crucially, the AI distinguishes *intentional patience* (waiting on something) from *neglect* (forgotten tasks). Unlike the Entropy Cleaner (which targets vague content) and the Chief of Staff (which targets overdue tasks), Decay targets tasks that are technically fine on paper but have been sitting untouched so long they may no longer be relevant.
 
-**Why it's interesting:** Most productivity systems suffer from "task debt accumulation" — things pile up because there's no mechanism that forces confrontation. Decay scoring makes the problem visible before it becomes a crisis.
+**Why it matters:** Every productivity system accumulates "zombie tasks" — things that were once real intentions but are now just list noise. Todoist has no mechanism to surface these. The decay system creates a forcing function: confront each task before it goes fully cold.
 
-**AI angle:** The AI's role is distinguishing *intentional patience* (a task you're waiting on) from *neglect* (a task you've forgotten about). It does this by looking at: task content, project context, labels, whether related tasks have been completed, and the user's historical engagement patterns with similar tasks.
+**Pros:**
+- Addresses the root cause of task system failure — accumulation without confrontation
+- Complements existing tools precisely: Entropy Cleaner = vague, Chief of Staff = overdue, Decay = forgotten
+- The AI distinction between patience and neglect is what makes this more than just an age filter
+- No new infrastructure needed — runs entirely off existing Todoist data
 
-**Implementation sketch:**
-- Decay score formula: `base_score = 100 - (days_old * 0.5) - (days_overdue * 2)`
-- Adjusted up if: recently viewed project, sibling tasks completed, p1/p2 priority
-- Adjusted down if: no due date ever set, project has high entropy score, similar tasks historically ignored
-- New route `/api/decay` runs the scoring model and returns top 20 decaying tasks
-- New page `/decay` shows tasks with decay bars (like entropy cleaner but time-focused)
-- Integrated into Chief of Staff: tasks below decay threshold automatically flagged
+**Cons:**
+- Decay formula needs per-user tuning — what feels "stale" varies significantly between people
+- Can feel anxiety-inducing without careful UI framing (make it feel like a helpful review, not a guilt list)
+- Without project health signals from Supabase (30+ days of snapshots), the scoring is less nuanced
+- No ground truth for "intentional patience" — the AI is making an educated guess
 
-**Pros:** Addresses a root cause of task system failure. Complements Entropy Cleaner (entropy = vague, decay = old).
-**Cons:** Decay formula needs tuning per user. Could feel anxiety-inducing if not framed carefully in the UI.
+---
+
+#### Decay Score Formula
+
+```
+freshness = 100
+           - (days_since_created × 0.4)   // age penalty: -0.4 per day
+           - (days_overdue × 2.0)          // overdue penalty: -2 per day
+           + (priority_bonus)              // p1=+20, p2=+10, p3=0, p4=-5
+           - (no_due_date_penalty)         // -10 if no due date ever set
+           - (no_description_penalty)      // -5 if content is under 3 words
+
+// Clamped to 0–100. Tasks with freshness < 35 are surfaced.
+```
+
+The AI then reviews these low-freshness tasks and adds a qualitative label:
+- `intentional_wait` — "Waiting for Q3 budget approval" — clearly on hold for a reason
+- `neglect` — "Research competitors" — no reason to be stale, just forgotten
+- `someday_maybe` — "Learn Spanish" — valid aspiration, low urgency, may never happen
+- `obsolete` — "Book restaurant for Feb 14th" — window has passed
+
+---
+
+#### Step 1 — No Database Changes Required
+
+The decay score is computed in real-time from the Todoist API response. No new Supabase tables needed unless you want to persist scores over time (optional enhancement later).
+
+If Supabase data is available (from `task_snapshots`), it can optionally enrich the score — e.g. if a project has had zero completions in 30 days, all tasks in that project get an additional penalty. This is an enhancement, not a requirement.
+
+---
+
+#### Step 2 — Create `/api/decay/route.ts`
+
+```typescript
+import { NextResponse } from 'next/server'
+import { getActiveTasks, getProjects, normalizePriority } from '@/lib/todoist'
+import { generateJSON } from '@/lib/ai'
+import { differenceInDays, parseISO, format } from 'date-fns'
+
+export type DecayLabel = 'intentional_wait' | 'neglect' | 'someday_maybe' | 'obsolete'
+export type DecayAction = 'keep' | 'delete' | 'move_to_someday' | 'add_due_date' | 'rewrite'
+
+export interface DecayingTask {
+  taskId: string
+  content: string
+  projectName: string
+  priority: string
+  daysOld: number
+  daysOverdue: number
+  freshnessScore: number          // 0–100, lower = more decayed
+  decayLabel: DecayLabel
+  suggestedAction: DecayAction
+  reason: string
+}
+
+export interface DecayResult {
+  summary: string
+  totalScanned: number
+  decayingCount: number
+  healthyCount: number
+  tasks: DecayingTask[]
+  insights: string[]
+}
+
+function computeFreshness(daysOld: number, daysOverdue: number, priority: string, hasDueDate: boolean, contentWordCount: number): number {
+  let score = 100
+  score -= daysOld * 0.4
+  score -= Math.max(0, daysOverdue) * 2
+  if (priority === 'p1') score += 20
+  else if (priority === 'p2') score += 10
+  else if (priority === 'p4') score -= 5
+  if (!hasDueDate) score -= 10
+  if (contentWordCount <= 2) score -= 5
+  return Math.max(0, Math.min(100, Math.round(score)))
+}
+
+export async function GET() {
+  try {
+    const [tasks, projects] = await Promise.all([getActiveTasks(), getProjects()])
+    const projectMap = new Map(projects.map((p) => [p.id, p.name]))
+    const today = new Date()
+
+    const enriched = tasks.map((t) => {
+      const daysOld = t.createdAt ? differenceInDays(today, parseISO(t.createdAt)) : 0
+      const daysOverdue = t.due?.date ? differenceInDays(today, parseISO(t.due.date)) : 0
+      const priority = normalizePriority(t.priority)
+      const freshness = computeFreshness(
+        daysOld,
+        daysOverdue,
+        priority,
+        !!t.due,
+        (t.content ?? '').split(' ').length,
+      )
+      return {
+        taskId: t.id,
+        content: t.content ?? '',
+        projectName: projectMap.get(t.projectId) ?? 'Inbox',
+        priority,
+        daysOld,
+        daysOverdue: Math.max(0, daysOverdue),
+        freshnessScore: freshness,
+        hasDueDate: !!t.due,
+        labels: t.labels,
+      }
+    })
+
+    // Only surface tasks below the freshness threshold
+    const decaying = enriched
+      .filter((t) => t.freshnessScore < 35)
+      .sort((a, b) => a.freshnessScore - b.freshnessScore)
+      .slice(0, 30)
+
+    const healthyCount = enriched.length - decaying.length
+
+    const prompt = `You are a productivity coach performing a task decay audit.
+
+Today: ${format(today, 'yyyy-MM-dd')}
+Total active tasks: ${enriched.length}
+Tasks with low freshness scores (below 35/100): ${decaying.length}
+
+${JSON.stringify(decaying, null, 2)}
+
+For each task, assign a decay label:
+- "intentional_wait": task is on hold for a legitimate reason (waiting for someone, a future date, an external event)
+- "neglect": task has been forgotten — no good reason for it to be stale
+- "someday_maybe": a valid aspiration but not actionable right now and may never be
+- "obsolete": the window for this task has passed or it is no longer relevant
+
+And recommend one action:
+- "keep": re-commit — this task still matters and should stay active
+- "delete": remove it entirely
+- "move_to_someday": valid idea, park it in a Someday/Maybe list
+- "add_due_date": good task, just drifting — give it a deadline
+- "rewrite": too vague to be actionable — needs a clearer definition
+
+Return JSON:
+{
+  "summary": "2-sentence overall assessment of task system health",
+  "totalScanned": ${enriched.length},
+  "decayingCount": ${decaying.length},
+  "healthyCount": ${healthyCount},
+  "tasks": [
+    {
+      "taskId": "...",
+      "content": "...",
+      "projectName": "...",
+      "priority": "p1|p2|p3|p4",
+      "daysOld": N,
+      "daysOverdue": N,
+      "freshnessScore": N,
+      "decayLabel": "intentional_wait|neglect|someday_maybe|obsolete",
+      "suggestedAction": "keep|delete|move_to_someday|add_due_date|rewrite",
+      "reason": "specific reason for this classification"
+    }
+  ],
+  "insights": ["pattern insight 1", "insight 2", "insight 3"]
+}`
+
+    const result = await generateJSON<DecayResult>(prompt)
+    return NextResponse.json(result)
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to run decay scan' },
+      { status: 500 },
+    )
+  }
+}
+```
+
+---
+
+#### Step 3 — Create `/app/decay/page.tsx`
+
+The UI follows the same pattern as Entropy Cleaner but uses freshness score visualisation:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ ⏳ Task Decay Review              [Run Decay Scan]       │
+├─────────────────────────────────────────────────────────┤
+│  247 scanned · 18 decaying · 229 healthy               │
+├─────────────────────────────────────────────────────────┤
+│  Filter: [All] [Neglect] [Obsolete] [Someday] [Wait]   │
+├─────────────────────────────────────────────────────────┤
+│  ░░░░░░░░░░ 8/100  "Research competitors"              │
+│  Neglect · 94 days old · No due date                   │
+│  → Delete  "No good reason this sat for 3 months"      │
+│                                          [Dismiss]      │
+├─────────────────────────────────────────────────────────┤
+│  ████░░░░░░ 21/100  "Update LinkedIn profile"          │
+│  Someday/Maybe · 67 days old                           │
+│  → Move to Someday  "Valid goal but no urgency"        │
+└─────────────────────────────────────────────────────────┘
+```
+
+Freshness bar colours:
+- 0–20: red (`bg-red-500`)
+- 21–34: amber (`bg-amber-500`)
+
+Decay label icons:
+- `neglect` → Ghost icon, slate
+- `obsolete` → XCircle, red
+- `someday_maybe` → Bookmark, blue
+- `intentional_wait` → Clock, amber
+
+---
+
+#### Step 4 — Add to Sidebar
+
+```typescript
+{
+  label: 'Decay Review',
+  href: '/decay',
+  icon: Timer,    // from lucide-react
+  description: 'Find forgotten tasks',
+}
+```
+
+---
+
+#### Step 5 — (Optional) Chief of Staff Integration
+
+In `chief-of-staff/route.ts`, after fetching tasks, add a pre-filter:
+
+```typescript
+// Flag any task with freshness < 20 before sending to CoS AI
+const veryDecayed = enriched.filter(t => computeFreshness(...) < 20)
+// Add to prompt context: "These tasks have very low freshness — prioritise recommending delete/archive"
+```
+
+---
+
+#### Step 6 — Implementation Order
+
+1. Create `/api/decay/route.ts` with the freshness formula and AI classification
+2. Create `/app/decay/page.tsx` (same pattern as entropy page — reuse card structure)
+3. Add to sidebar
+4. Test with real data — tune the `< 35` freshness threshold if too many or too few tasks surface
+5. (Optional) Add Chief of Staff integration
+6. (Optional) Add Supabase project health enrichment (reduce score for tasks in zero-activity projects)
+
+**Estimated complexity:** Low-Medium. The scoring formula runs in-memory with no DB needed. The hardest part is UI — the freshness bar visualisation and decay label filtering. Expect to tune the freshness formula constants after first use.
+
+---
+
+#### Manual Prerequisites (what you need to do before implementation starts)
+
+| # | Action | Where |
+|---|---|---|
+| 1 | No new environment variables required | — |
+| 2 | No new Supabase tables required for the base implementation | — |
+| 3 | (Optional) For the project health enrichment: confirm `task_snapshots` table has at least 7 days of data | Supabase → Table Editor → task_snapshots — check row count |
+| 4 | (Optional) For Chief of Staff integration: no extra setup needed | — |
+
+**Note:** This feature works from day one — it only needs your live Todoist task data, which is always available. The optional Supabase enrichment (project health signals) only kicks in after 7+ days of cron snapshots, but the core decay scoring works without it.
 
