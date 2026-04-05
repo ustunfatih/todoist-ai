@@ -54,7 +54,9 @@ export interface TodoistTask {
   sectionId: string | null
   parentId: string | null
   priority: number   // 1=p4 (lowest) … 4=p1 (highest)
-  due: { date: string; datetime?: string; string: string; isRecurring: boolean } | null
+  // Note: the `due` object mixes conventions — `is_recurring` stays snake_case
+  // in the v1 API even though all top-level task fields are camelCase.
+  due: { date: string; datetime?: string; string: string; is_recurring: boolean } | null
   deadline: { date: string } | null
   duration: { amount: number; unit: 'minute' | 'day' } | null
   labels: string[]

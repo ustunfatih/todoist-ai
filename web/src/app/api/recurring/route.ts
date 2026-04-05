@@ -32,7 +32,11 @@ export async function GET() {
     const today = new Date()
 
     // Filter to recurring tasks only
-    const recurring = tasks.filter((t) => t.due?.isRecurring === true)
+    // The v1 API returns is_recurring (snake_case) inside the due object.
+    // Also check due.string as a fallback — recurring tasks always have "every" in their string.
+    const recurring = tasks.filter(
+      (t) => t.due?.is_recurring === true || t.due?.string?.toLowerCase().includes('every'),
+    )
 
     const enriched = recurring.map((t) => {
       const dueDate = t.due?.date ?? null
