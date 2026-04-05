@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
+import { getCompletedTasks } from '@/lib/todoist'
 import { subDays } from 'date-fns'
 
 export interface CircadianHour {
@@ -8,16 +8,13 @@ export interface CircadianHour {
   completed: number
 }
 
+const TZ_OFFSET_HOURS = parseInt(process.env.TZ_OFFSET_HOURS ?? '3') // Qatar = UTC+3
+
 export async function GET() {
   try {
-    const thirtyDaysAgo = subDays(new Date(), 30).toISOString()
-
-    const { data, error } = await supabase
-      .from('completion_log')
-      .select('hour_of_day')
-      .gte('completed_at', thirtyDaysAgo)
-
-    if (error) throw new Error(error.message)
+    // Use last 30 days of completed tasks — longer window = more meaningful pattern
+    const since = subDays(new Date(), 30).toISOString()
+    const tasks = await getCompletedTasks(since)
 
     const hourCounts: CircadianHour[] = Array.from({ length: 24 }, (_, i) => ({
       hour: i,
@@ -25,13 +22,18 @@ export async function GET() {
       completed: 0,
     }))
 
-    for (const row of data ?? []) {
-      hourCounts[row.hour_of_day].completed++
+    for (const task of tasks) {
+      if (!task.completedAt) continue
+      const utcHour = new Date(task.completedAt).getUTCHours()
+      // Shift to user's local timezone
+      const localHour = (utcHour + TZ_OFFSET_HOURS + 24) % 24
+      hourCounts[localHour].completed++
     }
 
+    const totalLogged = tasks.length
     const peakHour = hourCounts.reduce((a, b) => (b.completed > a.completed ? b : a))
 
-    return NextResponse.json({ hours: hourCounts, peakHour, totalLogged: data?.length ?? 0 })
+    return NextResponse.json({ hours: hourCounts, peakHour, totalLogged })
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to load circadian data' },
