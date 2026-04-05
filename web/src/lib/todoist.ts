@@ -7,11 +7,14 @@
  *   Completed tasks:   GET /api/v1/tasks/completed/by_completion_date
  *   Productivity stats:GET /api/v1/tasks/completed/stats
  *
- * Field naming: the v1 API uses camelCase (completedAt, projectId, daysItems, dailyGoal).
- * The old sync/v9 used snake_case — that API is gone (410).
+ * IMPORTANT — field naming is INCONSISTENT across endpoints:
+ *   Active tasks (/tasks):      camelCase  (projectId, createdAt, isCompleted …)
+ *   Completed tasks (/completed): snake_case (project_id, completed_at …)
+ *   Stats (/stats):               snake_case (days_items, daily_goal, weekly_goal …)
+ *   due object:                   mixed      (is_recurring snake, rest varies)
  *
- * The /tasks endpoint returns { results: T[], nextCursor } when a filter is used,
- * or a plain array otherwise. unwrapArray() handles both.
+ * normalizeCompleted() and normalizeStats() map snake_case → camelCase so the
+ * rest of the app can use a consistent interface.
  */
 
 const API_KEY = process.env.TODOIST_API_KEY!
@@ -127,19 +130,49 @@ export async function getProjects(): Promise<TodoistProject[]> {
 }
 
 /** Completed tasks between `sinceDate` and `untilDate` (ISO datetime strings).
- *  Both `since` and `until` are required by the API; `until` defaults to now. */
+ *  Both `since` and `until` are required by the API; `until` defaults to now.
+ *  The completed-tasks endpoint returns snake_case — we normalize here. */
 export async function getCompletedTasks(sinceDate: string, untilDate?: string): Promise<TodoistCompletedTask[]> {
   const until = untilDate ?? new Date().toISOString()
-  const data = await get<{ items: TodoistCompletedTask[] }>(
+  // Use `unknown` so we can safely normalize before casting
+  const data = await get<{ items: Array<Record<string, unknown>> }>(
     '/tasks/completed/by_completion_date',
     { since: sinceDate, until, limit: '200' },
   )
-  return data.items ?? []
+  return (data.items ?? []).map((item) => ({
+    id: (item.id ?? item.task_id ?? '') as string,
+    content: (item.content ?? '') as string,
+    // API returns project_id (snake_case)
+    projectId: (item.projectId ?? item.project_id ?? '') as string,
+    // API returns completed_at (snake_case)
+    completedAt: (item.completedAt ?? item.completed_at ?? '') as string,
+  }))
 }
 
-/** Karma, goals, and daily/weekly completion counts. */
+/** Karma, goals, and daily/weekly completion counts.
+ *  The stats endpoint returns snake_case — we normalize here. */
 export async function getProductivityStats(): Promise<TodoistStats> {
-  return get<TodoistStats>('/tasks/completed/stats')
+  const raw = await get<Record<string, unknown>>('/tasks/completed/stats')
+  // Normalize snake_case → camelCase
+  const goals = (raw.goals ?? {}) as Record<string, unknown>
+  return {
+    karma: (raw.karma ?? 0) as number,
+    karmaTrend: (raw.karma_trend ?? raw.karmaTrend ?? '') as string,
+    daysItems: ((raw.days_items ?? raw.daysItems ?? []) as Array<Record<string, unknown>>).map((d) => ({
+      date: d.date as string,
+      totalCompleted: (d.total_completed ?? d.totalCompleted ?? 0) as number,
+    })),
+    weekItems: ((raw.week_items ?? raw.weekItems ?? []) as Array<Record<string, unknown>>).map((w) => ({
+      from: (w.from ?? '') as string,
+      to: (w.to ?? '') as string,
+      totalCompleted: (w.total_completed ?? w.totalCompleted ?? 0) as number,
+    })),
+    goals: {
+      dailyGoal: (goals.daily_goal ?? goals.dailyGoal ?? 0) as number,
+      weeklyGoal: (goals.weekly_goal ?? goals.weeklyGoal ?? 0) as number,
+      ignoreDays: (goals.ignore_days ?? goals.ignoreDays ?? []) as number[],
+    },
+  }
 }
 
 /** Update a task (partial). */
