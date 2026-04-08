@@ -791,6 +791,11 @@ CREATE TABLE weekly_reviews (
   report JSONB NOT NULL,         -- stores the full WeeklyReport object
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Enable RLS so Supabase Security Advisor stops flagging these public tables.
+ALTER TABLE task_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE completion_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE weekly_reviews ENABLE ROW LEVEL SECURITY;
 ```
 
 **3. Add Supabase to the project:**
@@ -804,7 +809,10 @@ Add to `web/.env.local`:
 ```bash
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key-here
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 ```
+
+Use the anon key only for browser-safe reads. For Next.js API routes and cron jobs, use the service-role key on the server so writes still work after RLS is enabled.
 
 **4. Create the Supabase client** at `web/src/lib/supabase.ts`:
 
@@ -2516,4 +2524,3 @@ const veryDecayed = enriched.filter(t => computeFreshness(...) < 20)
 | 4 | (Optional) For Chief of Staff integration: no extra setup needed | — |
 
 **Note:** This feature works from day one — it only needs your live Todoist task data, which is always available. The optional Supabase enrichment (project health signals) only kicks in after 7+ days of cron snapshots, but the core decay scoring works without it.
-

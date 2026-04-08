@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getActiveTasks, getOverdueTasks, getCompletedTasks, getProjects, normalizePriority } from '@/lib/todoist'
-import { supabase } from '@/lib/supabase'
+import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { format, subDays } from 'date-fns'
 
 export async function GET(req: Request) {
@@ -10,6 +10,7 @@ export async function GET(req: Request) {
   }
 
   const today = format(new Date(), 'yyyy-MM-dd')
+  const supabaseAdmin = getSupabaseAdmin()
   const since = subDays(new Date(), 1).toISOString()
   const until = new Date().toISOString()
 
@@ -49,7 +50,7 @@ export async function GET(req: Request) {
     completed_today: completedByProject.get(p.name) ?? 0,
   }))
 
-  await supabase
+  await supabaseAdmin
     .from('task_snapshots')
     .upsert(snapshotRows, { onConflict: 'snapshot_date,project_id' })
 
@@ -66,7 +67,7 @@ export async function GET(req: Request) {
   }))
 
   if (completionRows.length > 0) {
-    await supabase
+    await supabaseAdmin
       .from('completion_log')
       .upsert(completionRows, { onConflict: 'task_id' })
   }
