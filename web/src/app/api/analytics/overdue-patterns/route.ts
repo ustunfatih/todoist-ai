@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getOverdueTasks, getActiveTasks, getProjects, normalizePriority } from '@/lib/todoist'
+import { getOverdueTasks, getProjects, normalizePriority } from '@/lib/todoist'
 import { generateJSON } from '@/lib/ai'
 import { differenceInDays } from 'date-fns'
 
